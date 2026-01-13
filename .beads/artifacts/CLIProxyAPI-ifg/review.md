@@ -28,6 +28,7 @@
 **NOT VERIFIED** - Go not available in this environment
 
 Manual verification required:
+
 ```bash
 go mod tidy
 go build ./...

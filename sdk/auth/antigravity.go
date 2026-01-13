@@ -8,9 +8,11 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"time"
 
+	"github.com/mdp/qrterminal/v3"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/browser"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/misc"
@@ -77,8 +79,26 @@ func (AntigravityAuthenticator) Login(ctx context.Context, cfg *config.Config, o
 		_ = srv.Shutdown(shutdownCtx)
 	}()
 
-	redirectURI := fmt.Sprintf("http://localhost:%d/oauth-callback", port)
+	// Determine callback host - use custom IP if provided
+	callbackHost := "localhost"
+	if opts.CallbackIP != "" {
+		callbackHost = opts.CallbackIP
+	}
+	redirectURI := fmt.Sprintf("http://%s:%d/oauth-callback", callbackHost, port)
 	authURL := buildAntigravityAuthURL(redirectURI, state)
+
+	// Display QR code if requested
+	if opts.ShowQR {
+		fmt.Println("\nScan this QR code with your phone to authenticate:")
+		qrterminal.GenerateWithConfig(authURL, qrterminal.Config{
+			Level:     qrterminal.L,
+			Writer:    os.Stdout,
+			BlackChar: qrterminal.WHITE,
+			WhiteChar: qrterminal.BLACK,
+			QuietZone: 1,
+		})
+		fmt.Println()
+	}
 
 	if !opts.NoBrowser {
 		fmt.Println("Opening browser for antigravity authentication")
