@@ -9,14 +9,25 @@ Add QR code generation (`--qr`) and custom IP support (`--ip`) for OAuth login f
 
 ## Success Criteria
 
-- [ ] `--qr` flag generates QR code in terminal for login URL
+- [x] `--qr` flag generates QR code in terminal for login URL
   - Verify: `./cliproxy --login --qr` displays QR code
-- [ ] `--ip=x.x.x.x` flag overrides localhost in callback URL
+- [x] `--ip=x.x.x.x` flag overrides localhost in callback URL
   - Verify: `./cliproxy --login --ip=192.168.1.100` uses custom IP in OAuth redirect
-- [ ] Works with all login types (--login, --claude-login, --codex-login, etc.)
+- [x] Works with all login types (--login, --claude-login, --codex-login, etc.)
   - Verify: Test each login flow with --qr and --ip flags
-- [ ] QR code contains the full OAuth authorization URL
+- [x] QR code contains the full OAuth authorization URL
   - Verify: Scan QR code and confirm it opens correct auth URL
+
+## Implementation Notes
+
+**Completed 2026-01-13:**
+
+- Added `--qr` and `--ip` flags to `cmd/server/main.go`
+- Updated `LoginOptions` structs in `internal/cmd/openai_login.go` and `sdk/auth/interfaces.go`
+- Modified `internal/auth/gemini/gemini_auth.go` to:
+  - Use custom callback IP when `--ip` is provided
+  - Display QR code using `github.com/mdp/qrterminal/v3` when `--qr` is set
+- Propagated options through all login flows (Gemini, Claude, Codex, iFlow, Antigravity)
 
 ## Constraints
 
