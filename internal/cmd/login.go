@@ -67,10 +67,12 @@ func DoLogin(cfg *config.Config, projectID string, options *LoginOptions) {
 	}
 
 	loginOpts := &sdkAuth.LoginOptions{
-		NoBrowser: options.NoBrowser,
-		ProjectID: trimmedProjectID,
-		Metadata:  map[string]string{},
-		Prompt:    callbackPrompt,
+		NoBrowser:  options.NoBrowser,
+		ProjectID:  trimmedProjectID,
+		Metadata:   map[string]string{},
+		Prompt:     callbackPrompt,
+		ShowQR:     options.ShowQR,
+		CallbackIP: options.CallbackIP,
 	}
 
 	authenticator := sdkAuth.NewGeminiAuthenticator()
@@ -88,8 +90,10 @@ func DoLogin(cfg *config.Config, projectID string, options *LoginOptions) {
 
 	geminiAuth := gemini.NewGeminiAuth()
 	httpClient, errClient := geminiAuth.GetAuthenticatedClient(ctx, storage, cfg, &gemini.WebLoginOptions{
-		NoBrowser: options.NoBrowser,
-		Prompt:    callbackPrompt,
+		NoBrowser:  options.NoBrowser,
+		Prompt:     callbackPrompt,
+		ShowQR:     options.ShowQR,
+		CallbackIP: options.CallbackIP,
 	})
 	if errClient != nil {
 		log.Errorf("Gemini authentication failed: %v", errClient)

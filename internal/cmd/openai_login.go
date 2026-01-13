@@ -21,6 +21,12 @@ type LoginOptions struct {
 
 	// Prompt allows the caller to provide interactive input when needed.
 	Prompt func(prompt string) (string, error)
+
+	// ShowQR indicates whether to display a QR code for the auth URL.
+	ShowQR bool
+
+	// CallbackIP overrides localhost in the OAuth callback URL for remote access.
+	CallbackIP string
 }
 
 // DoCodexLogin triggers the Codex OAuth flow through the shared authentication manager.
@@ -43,9 +49,11 @@ func DoCodexLogin(cfg *config.Config, options *LoginOptions) {
 	manager := newAuthManager()
 
 	authOpts := &sdkAuth.LoginOptions{
-		NoBrowser: options.NoBrowser,
-		Metadata:  map[string]string{},
-		Prompt:    promptFn,
+		NoBrowser:  options.NoBrowser,
+		Metadata:   map[string]string{},
+		Prompt:     promptFn,
+		ShowQR:     options.ShowQR,
+		CallbackIP: options.CallbackIP,
 	}
 
 	_, savedPath, err := manager.Login(context.Background(), "codex", cfg, authOpts)

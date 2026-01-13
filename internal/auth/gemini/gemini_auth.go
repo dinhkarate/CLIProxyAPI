@@ -13,8 +13,10 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"time"
 
+	"github.com/mdp/qrterminal/v3"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/auth/codex"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/browser"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
@@ -49,8 +51,10 @@ type GeminiAuth struct {
 
 // WebLoginOptions customizes the interactive OAuth flow.
 type WebLoginOptions struct {
-	NoBrowser bool
-	Prompt    func(string) (string, error)
+	NoBrowser  bool
+	Prompt     func(string) (string, error)
+	ShowQR     bool   // Display QR code for auth URL
+	CallbackIP string // Override localhost in callback URL for remote access
 }
 
 // NewGeminiAuth creates a new instance of GeminiAuth.
@@ -225,7 +229,13 @@ func (g *GeminiAuth) getTokenFromWeb(ctx context.Context, config *oauth2.Config,
 	// Create a new HTTP server with its own multiplexer.
 	mux := http.NewServeMux()
 	server := &http.Server{Addr: ":8085", Handler: mux}
-	config.RedirectURL = "http://localhost:8085/oauth2callback"
+
+	// Determine callback host - use custom IP if provided, otherwise localhost
+	callbackHost := "localhost"
+	if opts != nil && opts.CallbackIP != "" {
+		callbackHost = opts.CallbackIP
+	}
+	config.RedirectURL = fmt.Sprintf("http://%s:8085/oauth2callback", callbackHost)
 
 	mux.HandleFunc("/oauth2callback", func(w http.ResponseWriter, r *http.Request) {
 		if err := r.URL.Query().Get("error"); err != "" {
@@ -267,8 +277,23 @@ func (g *GeminiAuth) getTokenFromWeb(ctx context.Context, config *oauth2.Config,
 	authURL := config.AuthCodeURL("state-token", oauth2.AccessTypeOffline, oauth2.SetAuthURLParam("prompt", "consent"))
 
 	noBrowser := false
+	showQR := false
 	if opts != nil {
 		noBrowser = opts.NoBrowser
+		showQR = opts.ShowQR
+	}
+
+	// Display QR code if requested
+	if showQR {
+		fmt.Println("\nScan this QR code with your phone to authenticate:")
+		qrterminal.GenerateWithConfig(authURL, qrterminal.Config{
+			Level:     qrterminal.L,
+			Writer:    os.Stdout,
+			BlackChar: qrterminal.WHITE,
+			WhiteChar: qrterminal.BLACK,
+			QuietZone: 1,
+		})
+		fmt.Println()
 	}
 
 	if !noBrowser {

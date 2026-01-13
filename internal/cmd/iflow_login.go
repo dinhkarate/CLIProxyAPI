@@ -24,9 +24,11 @@ func DoIFlowLogin(cfg *config.Config, options *LoginOptions) {
 	}
 
 	authOpts := &sdkAuth.LoginOptions{
-		NoBrowser: options.NoBrowser,
-		Metadata:  map[string]string{},
-		Prompt:    promptFn,
+		NoBrowser:  options.NoBrowser,
+		Metadata:   map[string]string{},
+		Prompt:     promptFn,
+		ShowQR:     options.ShowQR,
+		CallbackIP: options.CallbackIP,
 	}
 
 	_, savedPath, err := manager.Login(context.Background(), "iflow", cfg, authOpts)

@@ -61,6 +61,8 @@ func main() {
 	var iflowLogin bool
 	var iflowCookie bool
 	var noBrowser bool
+	var showQR bool
+	var callbackIP string
 	var antigravityLogin bool
 	var projectID string
 	var vertexImport string
@@ -75,6 +77,8 @@ func main() {
 	flag.BoolVar(&iflowLogin, "iflow-login", false, "Login to iFlow using OAuth")
 	flag.BoolVar(&iflowCookie, "iflow-cookie", false, "Login to iFlow using Cookie")
 	flag.BoolVar(&noBrowser, "no-browser", false, "Don't open browser automatically for OAuth")
+	flag.BoolVar(&showQR, "qr", false, "Display QR code for OAuth URL (for mobile scanning)")
+	flag.StringVar(&callbackIP, "ip", "", "Custom IP for OAuth callback URL (for remote access)")
 	flag.BoolVar(&antigravityLogin, "antigravity-login", false, "Login to Antigravity using OAuth")
 	flag.StringVar(&projectID, "project_id", "", "Project ID (Gemini only, not required)")
 	flag.StringVar(&configPath, "config", DefaultConfigPath, "Configure File Path")
@@ -425,7 +429,9 @@ func main() {
 
 	// Create login options to be used in authentication flows.
 	options := &cmd.LoginOptions{
-		NoBrowser: noBrowser,
+		NoBrowser:  noBrowser,
+		ShowQR:     showQR,
+		CallbackIP: callbackIP,
 	}
 
 	// Register the shared token store once so all components use the same persistence backend.
