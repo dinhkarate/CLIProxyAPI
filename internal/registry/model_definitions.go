@@ -348,6 +348,31 @@ func GetGeminiVertexModels() []*ModelInfo {
 			Description:                "Imagen 4.0 fast image generation model",
 			SupportedGenerationMethods: []string{"predict"},
 		},
+		// Veo video generation models
+		{
+			ID:                         "veo-3.0-generate-preview",
+			Object:                     "model",
+			Created:                    1750000000,
+			OwnedBy:                    "google",
+			Type:                       "gemini",
+			Name:                       "models/veo-3.0-generate-preview",
+			Version:                    "3.0",
+			DisplayName:                "Veo 3.0 Generate Preview",
+			Description:                "Veo 3.0 video generation model with audio support",
+			SupportedGenerationMethods: []string{"predictLongRunning"},
+		},
+		{
+			ID:                         "veo-3.0-fast-generate-preview",
+			Object:                     "model",
+			Created:                    1750000000,
+			OwnedBy:                    "google",
+			Type:                       "gemini",
+			Name:                       "models/veo-3.0-fast-generate-preview",
+			Version:                    "3.0",
+			DisplayName:                "Veo 3.0 Fast Generate Preview",
+			Description:                "Veo 3.0 fast video generation model optimized for lower latency",
+			SupportedGenerationMethods: []string{"predictLongRunning"},
+		},
 	}
 }
 

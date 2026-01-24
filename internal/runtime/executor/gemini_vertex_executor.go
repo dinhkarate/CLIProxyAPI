@@ -30,6 +30,15 @@ import (
 const (
 	// vertexAPIVersion aligns with current public Vertex Generative AI API.
 	vertexAPIVersion = "v1"
+
+	// veoPollingInterval is the initial interval between LRO polling requests.
+	veoPollingInterval = 5 * time.Second
+
+	// veoMaxPollingInterval is the maximum interval between polling requests (backoff cap).
+	veoMaxPollingInterval = 30 * time.Second
+
+	// veoPollingTimeout is the maximum time to wait for a Veo LRO to complete.
+	veoPollingTimeout = 5 * time.Minute
 )
 
 // isImagenModel checks if the model name is an Imagen image generation model.
@@ -39,11 +48,21 @@ func isImagenModel(model string) bool {
 	return strings.Contains(lowerModel, "imagen")
 }
 
+// isVeoModel checks if the model name is a Veo video generation model.
+// Veo models use the :predictLongRunning action (async LRO) instead of :generateContent.
+func isVeoModel(model string) bool {
+	lowerModel := strings.ToLower(model)
+	return strings.Contains(lowerModel, "veo")
+}
+
 // getVertexAction returns the appropriate action for the given model.
-// Imagen models use "predict", while Gemini models use "generateContent".
+// Imagen models use "predict", Veo models use "predictLongRunning", while Gemini models use "generateContent".
 func getVertexAction(model string, isStream bool) string {
 	if isImagenModel(model) {
 		return "predict"
+	}
+	if isVeoModel(model) {
+		return "predictLongRunning"
 	}
 	if isStream {
 		return "streamGenerateContent"
@@ -167,6 +186,290 @@ func convertToImagenRequest(payload []byte) ([]byte, error) {
 	}
 
 	return json.Marshal(imagenReq)
+}
+
+// convertToVeoRequest converts a Gemini-style request to Veo API format.
+// Veo API uses instances[].prompt with parameters for video generation settings.
+func convertToVeoRequest(payload []byte) ([]byte, error) {
+	// Extract prompt from Gemini-style contents
+	prompt := ""
+
+	// Try to get prompt from contents[0].parts[0].text
+	contentsText := gjson.GetBytes(payload, "contents.0.parts.0.text")
+	if contentsText.Exists() {
+		prompt = contentsText.String()
+	}
+
+	// If no contents, try messages format (OpenAI-compatible)
+	if prompt == "" {
+		messagesText := gjson.GetBytes(payload, "messages.#.content")
+		if messagesText.Exists() && messagesText.IsArray() {
+			for _, msg := range messagesText.Array() {
+				if msg.String() != "" {
+					prompt = msg.String()
+					break
+				}
+			}
+		}
+	}
+
+	// If still no prompt, try direct prompt field
+	if prompt == "" {
+		directPrompt := gjson.GetBytes(payload, "prompt")
+		if directPrompt.Exists() {
+			prompt = directPrompt.String()
+		}
+	}
+
+	if prompt == "" {
+		return nil, fmt.Errorf("veo: no prompt found in request")
+	}
+
+	// Build Veo API request
+	veoReq := map[string]any{
+		"instances": []map[string]any{
+			{
+				"prompt": prompt,
+			},
+		},
+		"parameters": map[string]any{
+			"sampleCount":   1,
+			"generateAudio": true, // Veo 3 requires generateAudio parameter
+		},
+	}
+
+	// Extract optional parameters
+	if aspectRatio := gjson.GetBytes(payload, "aspectRatio"); aspectRatio.Exists() {
+		veoReq["parameters"].(map[string]any)["aspectRatio"] = aspectRatio.String()
+	}
+	if sampleCount := gjson.GetBytes(payload, "sampleCount"); sampleCount.Exists() {
+		veoReq["parameters"].(map[string]any)["sampleCount"] = int(sampleCount.Int())
+	}
+	if durationSeconds := gjson.GetBytes(payload, "durationSeconds"); durationSeconds.Exists() {
+		veoReq["parameters"].(map[string]any)["durationSeconds"] = int(durationSeconds.Int())
+	}
+	if resolution := gjson.GetBytes(payload, "resolution"); resolution.Exists() {
+		veoReq["parameters"].(map[string]any)["resolution"] = resolution.String()
+	}
+	if generateAudio := gjson.GetBytes(payload, "generateAudio"); generateAudio.Exists() {
+		veoReq["parameters"].(map[string]any)["generateAudio"] = generateAudio.Bool()
+	}
+	if negativePrompt := gjson.GetBytes(payload, "negativePrompt"); negativePrompt.Exists() {
+		veoReq["instances"].([]map[string]any)[0]["negativePrompt"] = negativePrompt.String()
+	}
+
+	return json.Marshal(veoReq)
+}
+
+// convertVeoToGeminiResponse converts Veo API response to Gemini format
+// so it can be processed by the standard translation pipeline.
+// This ensures Veo models return responses in the same format as other Gemini models.
+func convertVeoToGeminiResponse(data []byte, model string) []byte {
+	// Veo response contains videos array with bytesBase64Encoded or gcsUri
+	videos := gjson.GetBytes(data, "videos")
+	if !videos.Exists() || !videos.IsArray() {
+		// Try predictions format (some versions may use this)
+		predictions := gjson.GetBytes(data, "predictions")
+		if predictions.Exists() && predictions.IsArray() {
+			return convertVeoPredictionsToGeminiResponse(predictions.Array(), model)
+		}
+		return data
+	}
+
+	// Build Gemini-compatible response with inlineData
+	parts := make([]map[string]any, 0)
+	for _, video := range videos.Array() {
+		videoData := video.Get("bytesBase64Encoded").String()
+		mimeType := video.Get("mimeType").String()
+		if mimeType == "" {
+			mimeType = "video/mp4"
+		}
+		if videoData != "" {
+			parts = append(parts, map[string]any{
+				"inlineData": map[string]any{
+					"mimeType": mimeType,
+					"data":     videoData,
+				},
+			})
+		}
+	}
+
+	// Generate unique response ID using timestamp
+	responseId := fmt.Sprintf("veo-%d", time.Now().UnixNano())
+
+	response := map[string]any{
+		"candidates": []map[string]any{{
+			"content": map[string]any{
+				"parts": parts,
+				"role":  "model",
+			},
+			"finishReason": "STOP",
+		}},
+		"responseId":   responseId,
+		"modelVersion": model,
+		// Veo API doesn't return token counts, set to 0 for tracking purposes
+		"usageMetadata": map[string]any{
+			"promptTokenCount":     0,
+			"candidatesTokenCount": 0,
+			"totalTokenCount":      0,
+		},
+	}
+
+	result, err := json.Marshal(response)
+	if err != nil {
+		return data
+	}
+	return result
+}
+
+// convertVeoPredictionsToGeminiResponse handles the predictions format for Veo responses.
+func convertVeoPredictionsToGeminiResponse(predictions []gjson.Result, model string) []byte {
+	parts := make([]map[string]any, 0)
+	for _, pred := range predictions {
+		videoData := pred.Get("bytesBase64Encoded").String()
+		mimeType := pred.Get("mimeType").String()
+		if mimeType == "" {
+			mimeType = "video/mp4"
+		}
+		if videoData != "" {
+			parts = append(parts, map[string]any{
+				"inlineData": map[string]any{
+					"mimeType": mimeType,
+					"data":     videoData,
+				},
+			})
+		}
+	}
+
+	responseId := fmt.Sprintf("veo-%d", time.Now().UnixNano())
+
+	response := map[string]any{
+		"candidates": []map[string]any{{
+			"content": map[string]any{
+				"parts": parts,
+				"role":  "model",
+			},
+			"finishReason": "STOP",
+		}},
+		"responseId":   responseId,
+		"modelVersion": model,
+		"usageMetadata": map[string]any{
+			"promptTokenCount":     0,
+			"candidatesTokenCount": 0,
+			"totalTokenCount":      0,
+		},
+	}
+
+	result, err := json.Marshal(response)
+	if err != nil {
+		return nil
+	}
+	return result
+}
+
+// pollVeoOperation polls a Veo LRO until completion or timeout.
+// Returns the final response data when done=true, or an error on timeout/failure.
+func pollVeoOperation(ctx context.Context, cfg *config.Config, auth *cliproxyauth.Auth, operationName string, saJSON []byte) ([]byte, error) {
+	// Extract location from operation name: projects/{project}/locations/{location}/operations/{id}
+	parts := strings.Split(operationName, "/")
+	location := "us-central1"
+	for i, p := range parts {
+		if p == "locations" && i+1 < len(parts) {
+			location = parts[i+1]
+			break
+		}
+	}
+
+	baseURL := vertexBaseURL(location)
+	pollURL := fmt.Sprintf("%s/%s/%s", baseURL, vertexAPIVersion, operationName)
+
+	interval := veoPollingInterval
+	deadline := time.Now().Add(veoPollingTimeout)
+
+	for {
+		if time.Now().After(deadline) {
+			return nil, fmt.Errorf("veo: operation timed out after %v", veoPollingTimeout)
+		}
+
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(interval):
+		}
+
+		httpReq, errNewReq := http.NewRequestWithContext(ctx, http.MethodGet, pollURL, nil)
+		if errNewReq != nil {
+			return nil, errNewReq
+		}
+
+		// Set authorization
+		if token, errTok := vertexAccessToken(ctx, cfg, auth, saJSON); errTok == nil && token != "" {
+			httpReq.Header.Set("Authorization", "Bearer "+token)
+		} else if errTok != nil {
+			return nil, fmt.Errorf("veo: access token error during polling: %w", errTok)
+		}
+
+		httpClient := newProxyAwareHTTPClient(ctx, cfg, auth, 0)
+		httpResp, errDo := httpClient.Do(httpReq)
+		if errDo != nil {
+			// Retry on transient errors
+			log.Warnf("veo: polling error (will retry): %v", errDo)
+			interval = minDuration(interval*2, veoMaxPollingInterval)
+			continue
+		}
+
+		data, errRead := io.ReadAll(httpResp.Body)
+		if errClose := httpResp.Body.Close(); errClose != nil {
+			log.Errorf("veo: close response body error: %v", errClose)
+		}
+		if errRead != nil {
+			log.Warnf("veo: read response error (will retry): %v", errRead)
+			interval = minDuration(interval*2, veoMaxPollingInterval)
+			continue
+		}
+
+		// Check for retryable status codes
+		if httpResp.StatusCode == 503 || httpResp.StatusCode == 504 || httpResp.StatusCode == 429 {
+			log.Warnf("veo: retryable status %d (will retry)", httpResp.StatusCode)
+			interval = minDuration(interval*2, veoMaxPollingInterval)
+			continue
+		}
+
+		if httpResp.StatusCode < 200 || httpResp.StatusCode >= 300 {
+			return nil, statusErr{code: httpResp.StatusCode, msg: string(data)}
+		}
+
+		// Check if operation is done
+		done := gjson.GetBytes(data, "done").Bool()
+		if done {
+			// Check for error in response
+			if errField := gjson.GetBytes(data, "error"); errField.Exists() {
+				errCode := errField.Get("code").Int()
+				errMsg := errField.Get("message").String()
+				return nil, fmt.Errorf("veo: operation failed with code %d: %s", errCode, errMsg)
+			}
+
+			// Extract the response field which contains the actual result
+			response := gjson.GetBytes(data, "response")
+			if response.Exists() {
+				return []byte(response.Raw), nil
+			}
+			// If no response field, return the whole data
+			return data, nil
+		}
+
+		// Not done yet, continue polling with backoff
+		interval = minDuration(interval*3/2, veoMaxPollingInterval)
+		log.Debugf("veo: operation not done, polling again in %v", interval)
+	}
+}
+
+// minDuration returns the smaller of two durations.
+func minDuration(a, b time.Duration) time.Duration {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 // GeminiVertexExecutor sends requests to Vertex AI Gemini endpoints using service account credentials.
@@ -307,6 +610,13 @@ func (e *GeminiVertexExecutor) executeWithServiceAccount(ctx context.Context, au
 			return resp, errImagen
 		}
 		body = imagenBody
+	} else if isVeoModel(baseModel) {
+		// Handle Veo models with special request format
+		veoBody, errVeo := convertToVeoRequest(req.Payload)
+		if errVeo != nil {
+			return resp, errVeo
+		}
+		body = veoBody
 	} else {
 		// Standard Gemini translation flow
 		from := opts.SourceFormat
@@ -399,6 +709,34 @@ func (e *GeminiVertexExecutor) executeWithServiceAccount(ctx context.Context, au
 		return resp, errRead
 	}
 	appendAPIResponseChunk(ctx, e.cfg, data)
+
+	// For Veo models, handle LRO polling
+	if isVeoModel(baseModel) {
+		// Extract operation name from response
+		operationName := gjson.GetBytes(data, "name").String()
+		if operationName == "" {
+			// If no operation name, check if response is already complete (done=true)
+			if gjson.GetBytes(data, "done").Bool() {
+				// Already done, extract response
+				if response := gjson.GetBytes(data, "response"); response.Exists() {
+					data = []byte(response.Raw)
+				}
+			} else {
+				return resp, fmt.Errorf("veo: no operation name in response")
+			}
+		} else {
+			// Poll for completion
+			log.Debugf("veo: starting LRO polling for operation: %s", operationName)
+			pollData, errPoll := pollVeoOperation(ctx, e.cfg, auth, operationName, saJSON)
+			if errPoll != nil {
+				return resp, errPoll
+			}
+			data = pollData
+		}
+		// Convert Veo response to Gemini format
+		data = convertVeoToGeminiResponse(data, baseModel)
+	}
+
 	reporter.publish(ctx, parseGeminiUsage(data))
 
 	// For Imagen models, convert response to Gemini format before translation
